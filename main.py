@@ -307,6 +307,19 @@ def _find_audio_b64(body):
                 elif "id" in lk and not audio_id:
                     audio_id = v
     return audio_id, audio_b64
+def normalize_column(col):
+    if not isinstance(col, str):
+        return col
+
+    col = col.strip()
+
+    # 점수 1 -> 점수1
+    col = re.sub(r'([가-힣A-Za-z])\s+(\d)', r'\1\2', col)
+
+    # Column 1 -> Column1
+    col = re.sub(r'([A-Za-z])\s+(\d)', r'\1\2', col)
+
+    return col
 
 @app.post("/answer-audio")
 async def answer_audio(request: Request):
@@ -452,11 +465,33 @@ async def answer_audio(request: Request):
         raw_llm = await chat([{"role": "user", "content": prompt}], model="gpt-4o", max_tokens=1500)
         last_debug_info["raw_llm"] = raw_llm
         ext = parse_json(raw_llm)
-        columns = ext.get("columns", []) or []
+        columns = [normalize_column(c) for c in (ext.get("columns", []) or [])]
+
         data_rows = ext.get("data_rows", []) or []
+
         req_stats = ext.get("requested_stats", [])
+
         num_rows = ext.get("num_rows")
+
         explicit_stats = ext.get("explicit_stats", {})
+
+        # Normalize keys inside explicit_stats
+        for stat_name, stat_value in explicit_stats.items():
+            if isinstance(stat_value, dict):
+                explicit_stats[stat_name] = {
+                    normalize_column(k): v
+                    for k, v in stat_value.items()
+                }
+
+        # Normalize correlation fields
+        corr = explicit_stats.get("correlation")
+        if isinstance(corr, list):
+            for item in corr:
+                if isinstance(item, dict):
+                    if "x" in item:
+                        item["x"] = normalize_column(item["x"])
+                    if "y" in item:
+                        item["y"] = normalize_column(item["y"])
     except Exception:
         pass
 
@@ -503,7 +538,9 @@ async def answer_audio(request: Request):
                     referenced.append(k)
     for c in referenced:
         if c not in columns:
-            columns.append(c)
+            c = normalize_column(c)
+            if c not in columns:
+                columns.append(c)
 
     if not req_stats:
         req_stats = ["mean", "std", "variance", "min", "max", "median", "mode", "range", "allowed_values", "value_range", "correlation"]
